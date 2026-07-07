@@ -170,6 +170,17 @@ async def refresh_message(chat_id: int):
 # ---------------------------------------------------------------------------
 
 async def start_poll(chat_id: int, title: str | None = None):
+    previous = polls.get(chat_id)
+    if previous and previous["message_id"] is not None:
+        try:
+            await bot.edit_message_reply_markup(
+                chat_id=chat_id,
+                message_id=previous["message_id"],
+                reply_markup=None,
+            )
+        except Exception as e:
+            logger.warning("Не удалось убрать кнопки у предыдущего опроса: %s", e)
+
     polls[chat_id] = new_poll_state()
     poll = polls[chat_id]
     poll["title"] = title
