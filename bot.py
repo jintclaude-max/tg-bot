@@ -23,6 +23,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     Message,
 )
+from aiohttp import web
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
 
@@ -325,12 +326,35 @@ def setup_scheduler():
 
 
 # ---------------------------------------------------------------------------
+# Health-check веб-сервер (нужен только для бесплатного тарифа Render Web Service —
+# сам Telegram-бот работает через polling и открытый порт ему не требуется)
+# ---------------------------------------------------------------------------
+
+async def health(request):
+    return web.Response(text="OK")
+
+
+async def run_web_server():
+    port = int(os.getenv("PORT", "8080"))
+    app = web.Application()
+    app.router.add_get("/", health)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logger.info("Health-check сервер запущен на порту %s", port)
+
+
+# ---------------------------------------------------------------------------
 # Точка входа
 # ---------------------------------------------------------------------------
 
 async def main():
     setup_scheduler()
-    await dp.start_polling(bot)
+    await asyncio.gather(
+        run_web_server(),
+        dp.start_polling(bot),
+    )
 
 
 if __name__ == "__main__":
