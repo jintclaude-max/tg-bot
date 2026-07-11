@@ -7,6 +7,7 @@
 """
 
 import asyncio
+import html
 import logging
 import os
 
@@ -66,6 +67,7 @@ def new_poll_state() -> dict:
         "title": None,
         "message_id": None,
         "announced_full": False,
+        "closed": False,
         "responses": {},       # user_id -> {"username": str, "status": str}
         "added_players": {},   # player_id -> {"name": str, "added_by": int, "added_by_username": str}
     }
@@ -78,9 +80,11 @@ def get_poll(chat_id: int) -> dict:
 
 
 def display_name(user) -> str:
-    if user.username:
-        return f"@{user.username}"
-    return user.full_name
+    # Ссылка вида tg://user?id=... работает даже если у человека не задан @username —
+    # так все участники выглядят и ведут себя одинаково: кликабельное имя на профиль.
+    visible_name = f"@{user.username}" if user.username else user.full_name
+    safe_name = html.escape(visible_name)
+    return f'<a href="tg://user?id={user.id}">{safe_name}</a>'
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +129,7 @@ def build_poll_text(poll: dict) -> str:
             unsure.append(label)
 
     for player in poll["added_players"].values():
-        come.append(f"{player['name']} (добавил {player['added_by_username']})")
+        come.append(f"{html.escape(player['name'])} (добавил {player['added_by_username']})")
 
     title = poll.get("title") or "Опрос на игру"
     is_full = count_come(poll) >= FULL_SQUAD_SIZE
@@ -195,14 +199,46 @@ async def cmd_poll(message: Message, command: CommandObject):
     await start_poll(message.chat.id, title)
 
 
+@dp.message(Command("stop"))
+async def cmd_stop(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.reply("Останавливать опрос может только админ.")
+        return
+
+    poll = polls.get(message.chat.id)
+    if poll is None or poll["message_id"] is None:
+        await message.reply("Активного опроса в этом чате нет.")
+        return
+
+    poll["closed"] = True
+    try:
+        await bot.edit_message_reply_markup(
+            chat_id=message.chat.id,
+            message_id=poll["message_id"],
+            reply_markup=None,
+        )
+    except Exception as e:
+        logger.warning("Не удалось убрать кнопки при остановке опроса: %s", e)
+
+    await message.answer("Опрос остановлен, ответы больше не принимаются.", disable_notification=True)
+
+    try:
+        await bot.delete_message(message.chat.id, message.message_id)
+    except Exception as e:
+        logger.warning("Не удалось удалить команду /stop: %s", e)
+
+
 # ---------------------------------------------------------------------------
 # Обработка нажатий: статус приду/пропущу/не уверен
 # ---------------------------------------------------------------------------
 
 @dp.callback_query(F.data.startswith("status:"))
 async def on_status(callback: CallbackQuery):
-    status = callback.data.split(":", 1)[1]
     poll = get_poll(callback.message.chat.id)
+    if poll["closed"]:
+        await callback.answer("Опрос остановлен, ответы больше не принимаются.", show_alert=True)
+        return
+    status = callback.data.split(":", 1)[1]
     poll["responses"][callback.from_user.id] = {
         "username": display_name(callback.from_user),
         "status": status,
