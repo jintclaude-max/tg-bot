@@ -80,9 +80,9 @@ def get_poll(chat_id: int) -> dict:
 
 
 def display_name(user) -> str:
-    # Ссылка вида tg://user?id=... работает даже если у человека не задан @username —
+    # Ссылка вида tg://user?id=... работает независимо от того, задан ли @username, —
     # так все участники выглядят и ведут себя одинаково: кликабельное имя на профиль.
-    visible_name = f"@{user.username}" if user.username else user.full_name
+    visible_name = user.full_name
     safe_name = html.escape(visible_name)
     return f'<a href="tg://user?id={user.id}">{safe_name}</a>'
 
