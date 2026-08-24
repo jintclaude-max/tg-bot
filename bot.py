@@ -229,6 +229,56 @@ async def cmd_stop(message: Message):
         logger.warning("Не удалось удалить команду /stop: %s", e)
 
 
+@dp.message(Command("remove"))
+async def cmd_remove(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.reply("Исключать участников может только админ.")
+        return
+
+    poll = polls.get(message.chat.id)
+    if poll is None or not poll["responses"]:
+        await message.reply("Нет участников для исключения.")
+        return
+
+    buttons = [
+        [InlineKeyboardButton(text=f"❌ {data.get('plain_name', 'Без имени')}", callback_data=f"remove_response:{user_id}")]
+        for user_id, data in poll["responses"].items()
+    ]
+    await message.answer(
+        "Кого исключить из опроса?",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        disable_notification=True,
+    )
+
+    try:
+        await bot.delete_message(message.chat.id, message.message_id)
+    except Exception as e:
+        logger.warning("Не удалось удалить команду /remove: %s", e)
+
+
+@dp.callback_query(F.data.startswith("remove_response:"))
+async def on_remove_response(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Исключать участников может только админ.", show_alert=True)
+        return
+
+    user_id = int(callback.data.split(":", 1)[1])
+    poll = get_poll(callback.message.chat.id)
+
+    data = poll["responses"].get(user_id)
+    if data is None:
+        await callback.answer("Этот участник уже исключён.", show_alert=True)
+        return
+
+    del poll["responses"][user_id]
+    await callback.answer("Участник исключён.")
+    try:
+        await callback.message.delete()
+    except Exception as e:
+        logger.warning("Не удалось удалить меню исключения участника: %s", e)
+    await refresh_message(callback.message.chat.id)
+
+
 # ---------------------------------------------------------------------------
 # Обработка нажатий: статус приду/пропущу/не уверен
 # ---------------------------------------------------------------------------
@@ -242,6 +292,7 @@ async def on_status(callback: CallbackQuery):
     status = callback.data.split(":", 1)[1]
     poll["responses"][callback.from_user.id] = {
         "username": display_name(callback.from_user),
+        "plain_name": callback.from_user.full_name,
         "status": status,
     }
     await refresh_message(callback.message.chat.id)
@@ -401,6 +452,7 @@ async def main():
     await bot.set_my_commands([
         BotCommand(command="poll", description="Запустить новый опрос"),
         BotCommand(command="stop", description="Остановить текущий опрос"),
+        BotCommand(command="remove", description="Исключить участника из опроса (админ)"),
     ])
     setup_scheduler()
     await asyncio.gather(
