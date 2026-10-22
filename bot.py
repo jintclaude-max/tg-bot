@@ -10,6 +10,7 @@ import asyncio
 import html
 import logging
 import os
+import time
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
@@ -69,8 +70,8 @@ def new_poll_state() -> dict:
         "message_id": None,
         "announced_full": False,
         "closed": False,
-        "responses": {},       # user_id -> {"username": str, "status": str}
-        "added_players": {},   # player_id -> {"name": str, "added_by": int, "added_by_username": str}
+        "responses": {},       # user_id -> {"username": str, "plain_name": str, "status": str, "ts": float}
+        "added_players": {},   # player_id -> {"name": str, "added_by": int, "added_by_username": str, "ts": float}
     }
 
 
@@ -119,18 +120,24 @@ def build_keyboard(poll: dict) -> InlineKeyboardMarkup:
 
 
 def build_poll_text(poll: dict) -> str:
+    # Списки строятся как пары (метка времени, текст) и сортируются по времени отметки:
+    # обычные ответы и добавленные игроки идут вместе, в порядке нажатия.
     come, skip, unsure = [], [], []
     for data in poll["responses"].values():
-        label = data["username"]
+        entry = (data["ts"], data["username"])
         if data["status"] == STATUS_COME:
-            come.append(label)
+            come.append(entry)
         elif data["status"] == STATUS_SKIP:
-            skip.append(label)
+            skip.append(entry)
         elif data["status"] == STATUS_UNSURE:
-            unsure.append(label)
+            unsure.append(entry)
 
     for player in poll["added_players"].values():
-        come.append(f"{html.escape(player['name'])} (добавил {player['added_by_username']})")
+        come.append((player["ts"], f"{html.escape(player['name'])} (добавил {player['added_by_username']})"))
+
+    come = [label for _, label in sorted(come, key=lambda e: e[0])]
+    skip = [label for _, label in sorted(skip, key=lambda e: e[0])]
+    unsure = [label for _, label in sorted(unsure, key=lambda e: e[0])]
 
     title = poll.get("title") or "Опрос на игру"
     is_full = count_come(poll) >= FULL_SQUAD_SIZE
@@ -290,10 +297,18 @@ async def on_status(callback: CallbackQuery):
         await callback.answer("Опрос остановлен, ответы больше не принимаются.", show_alert=True)
         return
     status = callback.data.split(":", 1)[1]
+    previous = poll["responses"].get(callback.from_user.id)
+    # Повторное нажатие на ту же кнопку не меняет время отметки (защита от случайного двойного клика);
+    # при смене статуса время обновляется, и участник встаёт в конец списка.
+    if previous is not None and previous["status"] == status:
+        ts = previous["ts"]
+    else:
+        ts = time.time()
     poll["responses"][callback.from_user.id] = {
         "username": display_name(callback.from_user),
         "plain_name": callback.from_user.full_name,
         "status": status,
+        "ts": ts,
     }
     await refresh_message(callback.message.chat.id)
     await callback.answer(f"Отмечено: {STATUS_LABELS[status]}")
@@ -328,6 +343,7 @@ async def on_add_player_name(message: Message, state: FSMContext):
         "name": message.text.strip(),
         "added_by": message.from_user.id,
         "added_by_username": display_name(message.from_user),
+        "ts": time.time(),
     }
     await state.clear()
 
