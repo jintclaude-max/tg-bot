@@ -55,6 +55,13 @@ STATUS_LABELS = {
 
 FULL_SQUAD_SIZE = 12  # при таком числе идущих считаем комплект набранным
 
+# Кнопки быстрого добавления: ключ (в callback_data) -> имя, которое попадёт в список.
+QUICK_PLAYERS = {
+    "artur": "Артур",
+    "sergeev": "Сергеев",
+    "dokuchaev": "Докучаев",
+}
+
 # ---------------------------------------------------------------------------
 # Хранилище данных опроса (в памяти).
 # Ключ — chat_id, значение — состояние опроса в этом чате.
@@ -71,7 +78,7 @@ def new_poll_state() -> dict:
         "announced_full": False,
         "closed": False,
         "responses": {},       # user_id -> {"username": str, "plain_name": str, "status": str, "ts": float}
-        "added_players": {},   # player_id -> {"name": str, "added_by": int, "added_by_username": str, "ts": float}
+        "added_players": {},   # player_id -> {"name": str, "added_by": int, "added_by_username": str, "ts": float, "quick_key": str | None}
     }
 
 
@@ -114,6 +121,11 @@ def build_keyboard(poll: dict) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton(text="❌ Пропущу", callback_data="status:skip")])
     rows.append([InlineKeyboardButton(text="❔ Пока не уверен", callback_data="status:unsure")])
     if not is_full:
+        # Кнопка быстрого добавления скрыта, пока этот игрок уже добавлен через неё.
+        added_quick = {p.get("quick_key") for p in poll["added_players"].values()}
+        for key, name in QUICK_PLAYERS.items():
+            if key not in added_quick:
+                rows.append([InlineKeyboardButton(text=f"➕ {name}", callback_data=f"quick_add:{key}")])
         rows.append([InlineKeyboardButton(text="➕ Добавить игрока", callback_data="add_player")])
     rows.append([InlineKeyboardButton(text="➖ Убрать добавленного игрока", callback_data="remove_player_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -344,6 +356,7 @@ async def on_add_player_name(message: Message, state: FSMContext):
         "added_by": message.from_user.id,
         "added_by_username": display_name(message.from_user),
         "ts": time.time(),
+        "quick_key": None,
     }
     await state.clear()
 
@@ -360,6 +373,38 @@ async def on_add_player_name(message: Message, state: FSMContext):
             logger.warning("Не удалось удалить запрос имени игрока: %s", e)
 
     await refresh_message(chat_id)
+
+
+@dp.callback_query(F.data.startswith("quick_add:"))
+async def on_quick_add(callback: CallbackQuery):
+    global _player_id_counter
+    key = callback.data.split(":", 1)[1]
+    name = QUICK_PLAYERS.get(key)
+    if name is None:
+        await callback.answer("Неизвестная кнопка.", show_alert=True)
+        return
+
+    poll = get_poll(callback.message.chat.id)
+    if poll["closed"]:
+        await callback.answer("Опрос остановлен, ответы больше не принимаются.", show_alert=True)
+        return
+    if count_come(poll) >= FULL_SQUAD_SIZE:
+        await callback.answer("Команды уже набраны.", show_alert=True)
+        return
+    if any(p.get("quick_key") == key for p in poll["added_players"].values()):
+        await callback.answer(f"{name} уже добавлен.", show_alert=True)
+        return
+
+    _player_id_counter += 1
+    poll["added_players"][_player_id_counter] = {
+        "name": name,
+        "added_by": callback.from_user.id,
+        "added_by_username": display_name(callback.from_user),
+        "ts": time.time(),
+        "quick_key": key,
+    }
+    await callback.answer(f"Добавлен: {name}")
+    await refresh_message(callback.message.chat.id)
 
 
 # ---------------------------------------------------------------------------
